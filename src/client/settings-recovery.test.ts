@@ -216,7 +216,7 @@ describe('QQ settings recovery', () => {
     render();
     await vi.advanceTimersByTimeAsync(0);
 
-    mode('斜杠命令').onChange!('disabled');
+    mode('谁可以用').onChange!('disabled');
     save();
     await vi.advanceTimersByTimeAsync(3000);
     mode('群聊').onChange!('disabled');

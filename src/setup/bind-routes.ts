@@ -21,7 +21,7 @@ import {
   type SetupCredentials,
 } from './persist.ts';
 import { getProfileDir } from '../shared/index.ts';
-import { AccessControlSchema } from '../config.ts';
+import { AccessControlSchema, GroupInterjectSchema } from '../config.ts';
 import { BIND_METHODS, RPC_ERROR_CODES } from '../shared/rpc-protocol.ts';
 import type { BindStateWire } from '../shared/bind-protocol.ts';
 
@@ -72,6 +72,7 @@ const EDITABLE_CONFIG_KEYS = new Set([
   'requireMention', 'streaming', 'showToolResults', 'debug',
   'provider', 'model', 'preset',
   'groupPrompt', 'directPrompt',
+  'groupInterject',
   'access',
 ]);
 
@@ -86,6 +87,7 @@ const EDITABLE_CONFIG_SCHEMAS: Record<string, (value: unknown) => unknown> = {
   preset: stringSchema('preset'),
   groupPrompt: stringSchema('groupPrompt'),
   directPrompt: stringSchema('directPrompt'),
+  groupInterject: (v) => GroupInterjectSchema(v as never),
   access: (v) => AccessControlSchema(v as never),
 };
 

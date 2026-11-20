@@ -46,3 +46,30 @@ describe('ConfigSchema 默认值（内层外层默认必须对齐：#94-1 不变
     expect(ConfigSchema(input).proactiveDelivery.externalTurns).toBe(expected);
   });
 });
+
+describe('ConfigSchema：群聊插话默认值', () => {
+  it('省略 groupInterject → 默认关闭且字段齐全', () => {
+    const cfg = ConfigSchema({});
+    expect(cfg.groupInterject).toEqual({
+      enabled: false,
+      chance: 0.15,
+      cooldownSec: 90,
+      maxPerHour: 6,
+      quietHours: [1, 8],
+      minRecentMessages: 3,
+      activeWindowSec: 300,
+    });
+  });
+
+  it('只给部分字段 → 其余走默认', () => {
+    const cfg = ConfigSchema({ groupInterject: { enabled: true, chance: 0.4 } });
+    expect(cfg.groupInterject.enabled).toBe(true);
+    expect(cfg.groupInterject.chance).toBe(0.4);
+    expect(cfg.groupInterject.cooldownSec).toBe(90);
+  });
+
+  it('概率越界直接报错（不静默夹取）', () => {
+    expect(() => ConfigSchema({ groupInterject: { chance: 5 } })).toThrow(/chance/);
+    expect(() => ConfigSchema({ groupInterject: { chance: -1 } })).toThrow(/chance/);
+  });
+});

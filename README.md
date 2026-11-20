@@ -100,6 +100,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `preset` | string | - | Agent preset id |
 | `cwd` | string | `process.cwd()` | Agent 工作目录 |
 | `requireMention` | boolean | `true` | 群聊是否需要 @bot 才触发 |
+| `groupInterject` | object | 见下 | 没人 @ 时按概率自己接一句（群聊插话） |
 | `groupPrompt` | string | - | 群聊额外 system prompt |
 | `directPrompt` | string | - | 私聊额外 system prompt |
 | `textChunkLimit` | number | `4500` | 单条消息最大字符数 |
@@ -111,6 +112,33 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `askTimeoutMs` | number | `300000` | 待答问题超时(ms)，默认 5 分钟（ask_user_question） |
 | `showToolResults` | boolean | `false` | 是否展示工具调用成功结果（错误始终展示） |
 | `debug` | boolean | `false` | 调试模式 |
+
+### 群聊插话（groupInterject）
+
+让机器人在没人 @ 的时候也能自己接一句，适合当群里的串子。默认关闭。
+
+| 配置 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `groupInterject.enabled` | boolean | `false` | 总开关 |
+| `groupInterject.chance` | number | `0.15` | 每条普通群消息触发插话的概率（0~1） |
+| `groupInterject.cooldownSec` | number | `90` | 两次插话最少间隔（秒） |
+| `groupInterject.maxPerHour` | number | `6` | 每小时最多插话次数（滚动 60 分钟） |
+| `groupInterject.quietHours` | number[] | `[1, 8]` | 静默时段 `[开始, 结束)` 本地小时；两数相等表示不静默 |
+| `groupInterject.minRecentMessages` | number | `3` | 回看窗口内至少多少条群消息才算「群里在聊」 |
+| `groupInterject.activeWindowSec` | number | `300` | 判断「在聊」的回看窗口（秒） |
+
+**前提**：QQ 官方机器人默认只收到 @ 它的消息。要让机器人看见整段群聊，得在手机 QQ 里打开机器人 → 设置 → 消息范围 → **「获取群内全部消息」**；不开的话插件永远收不到非 @ 的消息，这个开关也就没意义。
+
+被插话放行的消息会带上群历史，并在 prompt 里注明「没人 @ 你，你是自己接话的」，接不接由模型自己判断；被 @、被引用时行为不变。
+
+```yaml
+- id: im-qqbot
+  config:
+    groupInterject:
+      enabled: true
+      chance: 0.2
+      cooldownSec: 60
+```
 
 ### 访问控制（access）
 

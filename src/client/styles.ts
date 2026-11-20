@@ -110,6 +110,12 @@ const CONFIG_PANEL_CSS = `
   color: var(--dsw-alias-label-secondary);
 }
 .imqb-cfg-field { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; }
+/* 从属设置：跟在主开关下面，缩进 + 竖线，别和同级设置混在一起 */
+.imqb-cfg-subsection {
+  margin: 0 0 4px; padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+}
+.imqb-cfg-subsection > .imqb-cfg-field:first-child { border-top: 0.5px solid var(--dsw-alias-border-l2); }
 .imqb-cfg-field + .imqb-cfg-field { border-top: 0.5px solid var(--dsw-alias-border-l2); }
 .imqb-cfg-head { display: flex; align-items: center; gap: 8px; min-height: 28px; }
 .imqb-cfg-label {

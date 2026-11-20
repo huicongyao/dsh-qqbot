@@ -14,7 +14,7 @@ import { Button, Input, Switch, SegmentedControl } from '@deepseek-ai/dsh-client
 
 import { rpcCall, RpcError } from './rpc.ts';
 import { BIND_METHODS, BIND_RPC_ENDPOINT, RPC_ERROR_CODES } from '../shared/rpc-protocol.ts';
-import { configDraft, configPatch, DEFAULT_ACCESS, isConfigDirty, normalizeConfig, parseConfigDraft, rebaseConfig, type AccessControlWire, type ConfigDraft, type ConfigWire } from './config-form-state.ts';
+import { configDraft, configPatch, DEFAULT_ACCESS, DEFAULT_INTERJECT_WIRE, isConfigDirty, normalizeConfig, parseConfigDraft, rebaseConfig, type AccessControlWire, type ConfigDraft, type ConfigWire, type GroupInterjectWire } from './config-form-state.ts';
 import { SlashCommandList } from './slash-command-list.ts';
 import type { SlashCommandDescriptor } from '../shared/command-protocol.ts';
 import { ACCOUNT_METHODS, ACCOUNT_RPC_ENDPOINT } from '../shared/rpc-protocol.ts';
@@ -42,6 +42,74 @@ const MODE_OPTIONS: ReadonlyArray<{ value: AccessMode; label: string }> = [
   { value: 'allowlist', label: '白名单' },
   { value: 'disabled', label: '关闭' },
 ];
+
+/**
+ * 群聊插话字段 — 挂在「群聊仅回复 @机器人」下面，
+ * 因为这两件事是一条线上的：先决定非 @ 要不要理，再决定按什么概率理。
+ */
+function GroupInterjectFields({ value, onChange }: {
+  value: GroupInterjectWire;
+  onChange: (next: Partial<GroupInterjectWire>) => void;
+}): ReactNode {
+  const bounded = (raw: string, min: number, max: number, fallback: number): number => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+  };
+  const numberRow = (
+    key: 'cooldownSec' | 'maxPerHour' | 'minRecentMessages' | 'activeWindowSec',
+    label: string, min: number, max: number, step: number, hint: string,
+  ): ReactNode => createElement('div', { className: 'imqb-cfg-field', key },
+    createElement('label', { className: 'imqb-cfg-label', htmlFor: `imqq-gi-${key}` }, label),
+    createElement(Input, {
+      id: `imqq-gi-${key}`, type: 'number', min, max, step, value: String(value[key]),
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+        onChange({ [key]: bounded(event.target.value, min, max, value[key]) } as Partial<GroupInterjectWire>),
+    }),
+    createElement('p', { className: 'imqb-cfg-hint' }, hint));
+
+  return createElement('div', { className: 'imqb-cfg-subsection' },
+    createElement('div', { className: 'imqb-cfg-field', key: 'enabled' },
+      createElement('div', { className: 'imqb-cfg-head' },
+        createElement('span', { className: 'imqb-cfg-label' }, '没人 @ 时自己接话'),
+        createElement(Switch, { label: '没人 @ 时自己接话', checked: value.enabled,
+          onChange: (checked: boolean) => onChange({ enabled: checked }) })),
+      createElement('p', { className: 'imqb-cfg-hint' },
+        '需要先在手机 QQ 里把机器人的消息档位设成「获取群内全部消息」，否则收不到非 @ 的群消息。')),
+    value.enabled ? [
+      createElement('div', { className: 'imqb-cfg-field', key: 'chance' },
+        createElement('label', { className: 'imqb-cfg-label', htmlFor: 'imqq-gi-chance' }, '触发概率'),
+        createElement(Input, {
+          id: 'imqq-gi-chance', type: 'number', min: 0, max: 100, step: 1,
+          value: String(Math.round(value.chance * 100)),
+          onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+            onChange({ chance: bounded(event.target.value, 0, 100, value.chance * 100) / 100 }),
+        }),
+        createElement('p', { className: 'imqb-cfg-hint' }, '每条普通群消息触发插话的百分比；条件全过才会真的接。')),
+      numberRow('cooldownSec', '两次插话最少间隔', 0, 600, 10, '秒'),
+      numberRow('maxPerHour', '每小时最多插话', 1, 30, 1, '次（滚动 60 分钟）'),
+      numberRow('minRecentMessages', '群里在聊的门槛', 1, 20, 1, '回看窗口内至少这么多条群消息才算在聊'),
+      numberRow('activeWindowSec', '回看窗口', 30, 1800, 30, '秒'),
+      createElement('div', { className: 'imqb-cfg-field', key: 'quietHours' },
+        createElement('span', { className: 'imqb-cfg-label' }, '静默时段'),
+        createElement('div', { className: 'imqb-cfg-head' },
+          createElement(Input, {
+            id: 'imqq-gi-quiet-start', type: 'number', min: 0, max: 23, step: 1,
+            value: String(value.quietHours[0] ?? 1), 'aria-label': '静默开始小时',
+            onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+              onChange({ quietHours: [bounded(event.target.value, 0, 23, value.quietHours[0] ?? 1), value.quietHours[1] ?? 8] }),
+          }),
+          createElement('span', { className: 'imqb-cfg-hint' }, '点到'),
+          createElement(Input, {
+            id: 'imqq-gi-quiet-end', type: 'number', min: 0, max: 23, step: 1,
+            value: String(value.quietHours[1] ?? 8), 'aria-label': '静默结束小时',
+            onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+              onChange({ quietHours: [value.quietHours[0] ?? 1, bounded(event.target.value, 0, 23, value.quietHours[1] ?? 8)] }),
+          }),
+          createElement('span', { className: 'imqb-cfg-hint' }, '点'),
+        ),
+        createElement('p', { className: 'imqb-cfg-hint' }, '本地小时，含开始不含结束；两个数相等表示不静默。')),
+    ] : null);
+}
 
 const DRAFT_STORAGE_KEY = 'im-qqbot/config-draft/v1';
 
@@ -282,20 +350,18 @@ export function ConfigPanel({ bindPhase, appId }: ConfigPanelProps = {}): ReactN
         onChange: (value) => { patch('access', { ...access, groupMode: value }); },
       }),
       access.groupMode === 'allowlist' ? createElement(PairClaimPanel, { purpose: 'allow-group', title: '群白名单', enabled: bindPhase === 'bound', onChange: retry, hint: '生成配对码，让群成员在群里 @ 机器人后直接发送这个码，即把该群加入白名单。' }) : null,
-      createElement(SegmentedRow, { disabled: busy,
-        label: '斜杠命令', value: access.commandMode ?? 'open', options: MODE_OPTIONS,
-        help: '仅在获准接入的对话中生效。所有人模式允许成员切换模型、开始新会话等，影响该群的共享会话。审批和提问按钮按各自权限处理。',
-        onChange: value => { patch('access', { ...access, commandMode: value }); },
-      }),
-      (access.commandMode ?? 'open') === 'allowlist' ? createElement(PairClaimPanel, {
-        purpose: 'owner', title: '命令白名单', enabled: bindPhase === 'bound', onChange: retry,
-        hint: '名单按发送者 OpenID 校验，适用于获准接入的群聊和私聊。保存模式与管理名单分别生效。',
-      }) : null,
-      commandsError ? createElement('p', { className: 'imqb-cmd-error', role: 'alert' }, `命令清单加载失败：${commandsError}`) : null,
-      createElement(SlashCommandList, { commands }),
       createElement('div', { className: 'imqb-cfg-group-title' }, '基础设置'),
+      createElement('div', { className: 'imqb-cfg-field', key: 'requireMention' },
+        createElement('div', { className: 'imqb-cfg-head' },
+          createElement('span', { className: 'imqb-cfg-label' }, '群聊仅回复 @机器人的消息'),
+          createElement(Switch, { label: '群聊仅回复 @机器人的消息', checked: form.requireMention ?? true,
+            onChange: (value: boolean) => patch('requireMention', value) }))),
+      createElement(GroupInterjectFields, {
+        value: form.groupInterject ?? DEFAULT_INTERJECT_WIRE,
+        onChange: (next: Partial<GroupInterjectWire>) =>
+          patch('groupInterject', { ...(form.groupInterject ?? DEFAULT_INTERJECT_WIRE), ...next }),
+      }),
       ...([
-        ['requireMention', '群聊仅回复 @机器人的消息'],
         ['streaming', '流式输出'],
         ['showToolResults', '显示工具调用结果'],
       ] as const).map(([key, label]) => createElement('div', { className: 'imqb-cfg-field', key },
@@ -319,6 +385,18 @@ export function ConfigPanel({ bindPhase, appId }: ConfigPanelProps = {}): ReactN
       form.cwd === undefined ? null : createElement('div', { className: 'imqb-cfg-field' },
         createElement('span', { className: 'imqb-cfg-label' }, 'Agent 工作目录（只读）'),
         createElement('p', { className: 'imqb-cfg-readonly' }, form.cwd)),
+      createElement('div', { className: 'imqb-cfg-group-title' }, '斜杠命令'),
+      createElement(SegmentedRow, { disabled: busy,
+        label: '谁可以用', value: access.commandMode ?? 'open', options: MODE_OPTIONS,
+        help: '仅在获准接入的对话中生效。所有人模式允许成员切换模型、开始新会话等，影响该群的共享会话。审批和提问按钮按各自权限处理。',
+        onChange: value => { patch('access', { ...access, commandMode: value }); },
+      }),
+      (access.commandMode ?? 'open') === 'allowlist' ? createElement(PairClaimPanel, {
+        purpose: 'owner', title: '命令白名单', enabled: bindPhase === 'bound', onChange: retry,
+        hint: '名单按发送者 OpenID 校验，适用于获准接入的群聊和私聊。保存模式与管理名单分别生效。',
+      }) : null,
+      commandsError ? createElement('p', { className: 'imqb-cmd-error', role: 'alert' }, `命令清单加载失败：${commandsError}`) : null,
+      createElement(SlashCommandList, { commands }),
     ),
     createElement('div', { className: 'imqb-cfg-footer' },
       createElement('p', { className: `imqb-cfg-note${result === null ? '' : result.kind === 'failed' ? ' imqb-cfg-note--error' : ' imqb-cfg-note--ok'}`, role: result?.kind === 'failed' ? 'alert' : 'status', 'aria-live': 'polite' }, message),

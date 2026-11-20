@@ -7,11 +7,34 @@ export interface AccessControlWire {
   groupAllow: string[];
 }
 
+/** 群聊插话设置（没人 @ 时按概率自己接一句） */
+export interface GroupInterjectWire {
+  enabled: boolean;
+  chance: number;
+  cooldownSec: number;
+  maxPerHour: number;
+  quietHours: number[];
+  minRecentMessages: number;
+  activeWindowSec: number;
+}
+
+/** 与服务端 DEFAULT_GROUP_INTERJECT 对齐的表单默认值 */
+export const DEFAULT_INTERJECT_WIRE: GroupInterjectWire = {
+  enabled: false,
+  chance: 0.15,
+  cooldownSec: 90,
+  maxPerHour: 6,
+  quietHours: [1, 8],
+  minRecentMessages: 3,
+  activeWindowSec: 300,
+};
+
 /** Credential secrets are never included in the browser settings response. */
 export interface ConfigWire {
   accessRevision?: string;
   appId?: string;
   requireMention?: boolean;
+  groupInterject?: GroupInterjectWire;
   streaming?: boolean;
   showToolResults?: boolean;
   debug?: boolean;
@@ -24,7 +47,7 @@ export interface ConfigWire {
   cwd?: string;
 }
 
-const EDITABLE_KEYS = ['access', 'requireMention', 'streaming', 'showToolResults', 'debug',
+const EDITABLE_KEYS = ['access', 'requireMention', 'groupInterject', 'streaming', 'showToolResults', 'debug',
   'provider', 'model', 'preset', 'groupPrompt', 'directPrompt'] as const;
 const ACCESS_KEYS = ['c2cMode', 'c2cAllow', 'groupMode', 'groupAllow', 'commandMode'] as const;
 
@@ -105,6 +128,17 @@ export function parseConfigDraft(value: unknown): ConfigDraft | undefined {
     }
     for (const key of ['requireMention', 'streaming', 'showToolResults', 'debug']) {
       if (fields[key] !== undefined && typeof fields[key] !== 'boolean') return false;
+    }
+    if (fields.groupInterject !== undefined) {
+      const gi = fields.groupInterject;
+      if (gi === null || typeof gi !== 'object') return false;
+      const interject = gi as Record<string, unknown>;
+      if (typeof interject.enabled !== 'boolean') return false;
+      for (const key of ['chance', 'cooldownSec', 'maxPerHour', 'minRecentMessages', 'activeWindowSec']) {
+        if (typeof interject[key] !== 'number' || !Number.isFinite(interject[key] as number)) return false;
+      }
+      const quiet = interject.quietHours;
+      if (!Array.isArray(quiet) || quiet.length !== 2 || !quiet.every((n: unknown) => typeof n === 'number')) return false;
     }
     if (fields.access !== undefined) {
       if (fields.access === null || typeof fields.access !== 'object') return false;

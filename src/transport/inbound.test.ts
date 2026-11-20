@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sessionFailureReply } from './inbound.ts';
+import { buildAgentBody, sessionFailureReply } from './inbound.ts';
 import { SessionArchivedError, SessionBusyError } from '../session/errors.ts';
 
 describe('sessionFailureReply', () => {
@@ -48,5 +48,40 @@ describe('sessionFailureReply', () => {
         expect(text).not.toContain(jargon);
       }
     }
+  });
+});
+
+describe('buildAgentBody：群聊插话（没人 @）', () => {
+  const history = [
+    { senderId: 'u1', senderName: '张三', content: '今天吃什么', timestamp: 1, messageId: 'm1' },
+    { senderId: 'u2', senderName: '李四', content: '火锅吧', timestamp: 2, messageId: 'm2' },
+  ];
+
+  it('被 @ 时照旧带历史，不加插话提示', () => {
+    const body = buildAgentBody('[张三 (u1)] 在吗 (@you)', history, true, true, false);
+    expect(body).toContain('[Chat history begins]');
+    expect(body).toContain('今天吃什么');
+    expect(body).toContain('(@you)');
+    expect(body).not.toContain('你是自己接话的');
+  });
+
+  it('插话时也带历史，并说明没人 @ 她', () => {
+    const body = buildAgentBody('[李四 (u2)] 火锅吧', history, true, false, true);
+    expect(body).toContain('[Chat history begins]');
+    expect(body).toContain('火锅吧');
+    expect(body).toContain('你是自己接话的');
+    expect(body).not.toContain('(@you)');
+  });
+
+  it('插话但没历史时，只给提示不拼历史块', () => {
+    const body = buildAgentBody('[李四 (u2)] 在干嘛', undefined, true, false, true);
+    expect(body).not.toContain('[Chat history begins]');
+    expect(body).toContain('你是自己接话的');
+    expect(body.endsWith('[李四 (u2)] 在干嘛')).toBe(true);
+  });
+
+  it('普通群消息（没人 @ 也不插话）不拼历史', () => {
+    const body = buildAgentBody('[李四 (u2)] 随便说说', history, true, false, false);
+    expect(body).toBe('[李四 (u2)] 随便说说');
   });
 });

@@ -26,7 +26,30 @@ import { buildCommandList } from '../commands/index.ts';
 import { attachmentProcessor } from '../middleware/attachment.ts';
 import { questionAnswer } from '../middleware/question-answer.ts';
 import { getHistoryStore, historyGroupKey } from '../features/history-store.ts';
+import { createInterjectTracker, type InterjectTracker } from '../features/interject.ts';
 import { messageSenderName } from '../shared/message-sender-name.ts';
+
+/**
+ * 群聊插话判断：没人 @ 时，按概率把这条消息当成在叫机器人。
+ *
+ * 只有机器人消息档位是「获取群内全部消息」时才会真的收到非 @ 的群消息，
+ * 否则 mentionGate 根本不会问到非 @ 的消息，这里一次都不会被调用。
+ */
+export function createInterjectDecider(
+  config: ImQQBotConfig,
+  logger: Logger,
+  interject: InterjectTracker,
+): (ctx: { message: { kind: string; groupOpenid?: string } }) => boolean {
+  return (ctx) => {
+    if (!config.requireMention) return false;
+    const gid = ctx.message.groupOpenid;
+    if (ctx.message.kind !== 'group' || !gid) return false;
+    const decision = interject.shouldInterject(gid, config.groupInterject);
+    if (decision.pass) logger.info(`im-qqbot: 群 ${gid} 插话（${decision.reason}）`);
+    else if (config.debug) logger.debug(`im-qqbot: 群 ${gid} 不插话（${decision.reason}）`);
+    return decision.pass;
+  };
+}
 
 export function setupMiddlewares(
   bot: QQBot,
@@ -40,7 +63,13 @@ export function setupMiddlewares(
   // 2. 消息过滤：bot 回声 + 消息去重
   bot.use(messageFilter({ skipSelfEcho: false }));
 
-  const mention = mentionGate({ requireMentionInGroup: config.requireMention });
+  // 群聊活跃度：只记时间戳，用来判断「群里是不是正聊着」
+  const interject = createInterjectTracker();
+
+  const mention = mentionGate({
+    requireMentionInGroup: config.requireMention,
+    isImplicitMention: createInterjectDecider(config, logger, interject),
+  });
   const limit = rateLimiter();
 
   // 有效网页邀请是加白入口，必须先于访问控制；普通消息仍走下方策略。
@@ -89,6 +118,15 @@ export function setupMiddlewares(
       return historyGroupKey(config.appId, gid);
     },
   }));
+
+  // 4.5 群聊活跃度：每条群消息都记一笔（包括后面会被门控挡掉的），
+  //     用来判断「群里是不是在聊」，历史缓冲被清空后也不受影响
+  bot.use((ctx, next) => {
+    if (ctx.message.kind === 'group' && ctx.message.groupOpenid) {
+      interject.note(ctx.message.groupOpenid);
+    }
+    return next();
+  });
 
   // 5. 群聊 @bot 门控
   bot.use(mention);

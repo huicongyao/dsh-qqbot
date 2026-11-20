@@ -57,6 +57,8 @@ interface HistoryEntry {
 
 interface MentionState {
   wasMentioned?: boolean;
+  /** 没人 @，是插话策略放行的（自己凑上去接一句） */
+  implicit?: boolean;
 }
 
 interface MiddlewareState {
@@ -197,10 +199,11 @@ function assembleAgentBody(
 ): string | null {
   const isGroup = scope === 'group';
   const wasMentioned = state.mention?.wasMentioned ?? false;
+  const implicit = state.mention?.implicit === true && !wasMentioned;
 
   const userContent = buildUserContent(msg, state, logger);
 
-  if (isEmptyMessage(userContent, msg.attachments, isGroup, wasMentioned)) return null;
+  if (isEmptyMessage(userContent, msg.attachments, isGroup, wasMentioned || implicit)) return null;
 
   const quotePart = buildQuotePart(state.quote);
   const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned);
@@ -208,7 +211,7 @@ function assembleAgentBody(
   const dynamicCtx = buildDynamicCtx(msg, state);
 
   const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
-  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned);
+  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, implicit);
 
   return agentBody;
 }
@@ -369,16 +372,24 @@ function renderMediaLine(
 }
 
 /**
+ * 插话提示：这条没人 @ 她，是她自己凑上去的，接不接由她自己判断。
+ */
+const IMPLICIT_INTERJECT_HINT =
+  '[这条消息没有 @ 你，你是自己接话的。想接就自然接一句，不想接就当作没看见、保持安静。]';
+
+/**
  * Layer 5: 最终 agentBody 拼合
  */
-function buildAgentBody(
+export function buildAgentBody(
   base: string,
   history: HistoryEntry[] | undefined,
   isGroup: boolean,
   wasMentioned: boolean,
+  implicit: boolean,
 ): string {
-  if (!isGroup || !wasMentioned || !history || history.length === 0) {
-    return base;
+  // 插话时也带上群里的上下文：没人 @ 她，但她在接群里的话
+  if (!isGroup || !(wasMentioned || implicit) || !history || history.length === 0) {
+    return implicit ? `${IMPLICIT_INTERJECT_HINT}\n${base}` : base;
   }
 
   const historyLines = history.map(h => {
@@ -391,6 +402,7 @@ function buildAgentBody(
     ...historyLines,
     '',
     '[Chat history ends]',
+    ...(implicit ? [IMPLICIT_INTERJECT_HINT] : []),
     '[Current message]',
     base,
   ].join('\n');

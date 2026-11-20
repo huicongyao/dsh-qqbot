@@ -2,6 +2,7 @@
  * dsh-im-qqbot 插件配置 Schema
  */
 import Schema from '@deepseek-ai/schemastery';
+import { DEFAULT_GROUP_INTERJECT, type GroupInterjectConfig } from './features/interject.ts';
 
 export interface AccessControlConfig {
   /** C2C 访问模式 */
@@ -82,6 +83,8 @@ export interface ImQQBotConfig {
   cwd?: string;
   /** 是否启用群消息 @mention 门控 */
   requireMention: boolean;
+  /** 群聊插话（没人 @ 时按概率自己接一句） */
+  groupInterject: GroupInterjectConfig;
   /** 群聊额外 system prompt */
   groupPrompt?: string;
   /** 私聊额外 system prompt */
@@ -124,6 +127,24 @@ export const AccessControlSchema: Schema<AccessControlConfig> = Schema.object({
   groupAllow: Schema.array(Schema.string()).default([]).description('群聊白名单（群 OpenID）'),
 });
 
+/** 群聊插话子 Schema（独立导出：config 路由的服务端校验复用） */
+export const GroupInterjectSchema: Schema<GroupInterjectConfig> = Schema.object({
+  enabled: Schema.boolean().default(DEFAULT_GROUP_INTERJECT.enabled)
+    .description('没人 @ 时也按概率自己接一句（需要机器人消息档位为「获取群内全部消息」）'),
+  chance: Schema.number().min(0).max(1).default(DEFAULT_GROUP_INTERJECT.chance)
+    .description('每条普通群消息触发插话的概率（0~1）'),
+  cooldownSec: Schema.number().min(0).default(DEFAULT_GROUP_INTERJECT.cooldownSec)
+    .description('两次插话最少间隔（秒）'),
+  maxPerHour: Schema.number().min(1).default(DEFAULT_GROUP_INTERJECT.maxPerHour)
+    .description('每小时最多插话次数（滚动 60 分钟）'),
+  quietHours: Schema.array(Schema.number()).default([...DEFAULT_GROUP_INTERJECT.quietHours])
+    .description('静默时段 [开始, 结束) 本地小时，两者相等表示不静默'),
+  minRecentMessages: Schema.number().min(1).default(DEFAULT_GROUP_INTERJECT.minRecentMessages)
+    .description('回看窗口内至少多少条群消息才算「在聊」'),
+  activeWindowSec: Schema.number().min(30).default(DEFAULT_GROUP_INTERJECT.activeWindowSec)
+    .description('判断「在聊」的回看窗口（秒）'),
+});
+
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   appId: Schema.string().default('').description('QQ 机器人 AppID'),
   appSecret: Schema.string().default('').description('QQ 机器人 AppSecret'),
@@ -132,6 +153,7 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   preset: Schema.string().description('Agent preset id'),
   cwd: Schema.string().description('Agent working directory (default ~/.dsh-qqbot/workspace)'),
   requireMention: Schema.boolean().default(true).description('群聊是否需要@bot触发'),
+  groupInterject: GroupInterjectSchema.default({ ...DEFAULT_GROUP_INTERJECT }).description('群聊插话策略'),
   groupPrompt: Schema.string().description('群聊额外system prompt'),
   directPrompt: Schema.string().description('私聊额外system prompt'),
   textChunkLimit: Schema.number().default(4500).description('单条消息最大字符数'),
