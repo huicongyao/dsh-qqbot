@@ -3,6 +3,8 @@
  * 不混入用户正文。相对时间用 at/ago，避免模型把沉睡后的旧消息当实时。
  */
 import type { QQScope } from './scope.ts';
+import { maskOpenid } from '../shared/openid.ts';
+import { cleanDisplayName } from '../shared/display-name.ts';
 
 export const TURN_META_CONTEXT_NAME = 'qqbot:turn-meta';
 export const TURN_META_ORDER = 100;
@@ -11,7 +13,7 @@ export interface TurnMeta {
   scope: QQScope;
   /** 发送者展示名。 */
   senderName?: string;
-  /** 发送者 QQ openid/号（群聊 @ 时一并给模型，便于称呼与区分）。 */
+  /** 发送者 QQ openid（完整值；写进 prompt 时只留尾号，见 maskOpenid）。 */
   senderId?: string;
   /** 群聊是否 @ 了机器人。 */
   mentioned?: boolean;
@@ -46,7 +48,10 @@ export function clockOf(at: number | undefined): string {
 export function turnMetaText(meta: TurnMeta): string {
   const parts: string[] = [];
   parts.push(`来源：QQ ${meta.scope === 'group' ? '群聊' : '私聊'}`);
-  const who = meta.senderName ? (meta.senderId ? `${meta.senderName}（QQ ${meta.senderId}）` : meta.senderName) : (meta.senderId ? `QQ ${meta.senderId}` : '');
+  // 只给尾号：模型需要区分「谁说的」，但完整 openid 不该进上下文
+  const senderHandle = meta.senderId ? maskOpenid(meta.senderId) : '';
+  const senderName = cleanDisplayName(meta.senderName);
+  const who = senderName ? (senderHandle ? `${senderName}（QQ ${senderHandle}）` : senderName) : (senderHandle ? `QQ ${senderHandle}` : '');
   if (who) parts.push(`发送者：${who}`);
   if (meta.scope === 'group' && meta.mentioned) parts.push(`@：${meta.senderName ? `「${meta.senderName}」` : '本轮消息'} @ 了你`);
   const rel = relTime(meta.at, meta.now);

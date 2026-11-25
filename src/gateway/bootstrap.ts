@@ -32,6 +32,7 @@ import { startMediaCleanup } from '../media/media-cleaner.ts';
 import { ensureVisionInputModal, registerDescribeImageTool } from '../media/vision-tool.ts';
 import { registerSendFileTool, type MediaSenderLike } from '../media/send-file-tool.ts';
 import { DeliverablesDeliverer } from '../transport/deliverables.ts';
+import { GroupMemberDirectory, sanitizeAtMentions } from '../features/at-mention.ts';
 
 /**
  * interaction 统一分发器：按 button_data 的顶层 `t` 判别字段，路由到对应
@@ -61,6 +62,8 @@ export async function bootstrapGateway(
   // ── 回合归属：入站登记 + 回合跟踪，出站/提问/审批/发文件共享同一投递目标解析 ──
   const qqInputs = new QqInputRegistry({ ttlMs: inputOriginTtlMs(config.processingTimeoutMs) });
   const turnTracker = createTurnTracker(manager, config, logger, qqInputs);
+  // 群成员目录：入站记录「谁说过话」，出站把模型写的 [[at:尾号]] 还原成 member_openid
+  const groupDirectory = new GroupMemberDirectory();
 
   // ── 初始化 QQ Bot SDK ──
   const userAgent = buildUserAgent();
@@ -86,7 +89,7 @@ export async function bootstrapGateway(
     if (config.debug) {
       logger.debug(`← message (post-middleware): ${JSON.stringify(msg, null, 2).slice(0, 500)}`);
     }
-    await handleInbound(mCtx, manager, config, logger, qqInputs);
+    await handleInbound(mCtx, manager, config, logger, qqInputs, groupDirectory);
   });
 
   // ── 出站：dsh session/event → QQ 消息 ──
@@ -100,9 +103,11 @@ export async function bootstrapGateway(
 
   // 发送适配器：将 QQBot 实例适配为 QQBotSender（openStream 参数形态不同）。
   // sendMarkdown 统一做被动回复限额管控：同一 msgId 超限/过期时降级主动推送。
+  // 这里再兜一层 [[at:...]] 清理：群聊正文已在 outbound 里换成 @ 标签，
+  // 走这条路的提问/审批/工具文本没有 @ 语义，不能把内部语法发出去。
   const replyLimiter = new ReplyLimiter({ limit: 4 });
   const sender: QQBotSender = {
-    sendMarkdown: (target, content, opts) => sendResolvedMarkdown(bot, resolveReplyTarget(target, replyLimiter, true), content, opts),
+    sendMarkdown: (target, content, opts) => sendResolvedMarkdown(bot, resolveReplyTarget(target, replyLimiter, true), sanitizeAtMentions(content), opts),
     openStream: (target) => bot.openStream({
       target: {
         scope: target.scope,
@@ -126,7 +131,7 @@ export async function bootstrapGateway(
   const deliverablesDeliverer = new DeliverablesDeliverer(sender, mediaSender, config, logger);
 
   const outbound = createOutboundHandler(
-    manager, sender, config, logger, toolsRegistry, deliverablesDeliverer, turnTracker,
+    manager, sender, config, logger, toolsRegistry, deliverablesDeliverer, turnTracker, groupDirectory,
   );
   // session/event 按会话作用域派发。根作用域监听不带 global 收不到
   // 桌面恢复出来的 agent，主动回合的 user/message 会直接丢。

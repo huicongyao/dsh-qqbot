@@ -13,6 +13,7 @@ import { OutboundBuffer, type QQBotSender } from './outbound-buffer.ts';
 import { formatToolResult, type ToolsRegistryLike, type ToolResultData } from './tool-presenter.ts';
 import type { DeliverablesDelivererLike } from './deliverables.ts';
 import { QqInputRegistry } from './qq-input-origin.ts';
+import { rewriteGroupAtMentions, sanitizeAtMentions, type GroupMemberDirectory } from '../features/at-mention.ts';
 import { TurnTracker, type DeliveryPlan } from './turn-tracker.ts';
 import {
   parseEvent,
@@ -82,6 +83,8 @@ class OutboundRouter {
   private readonly toolsRegistry: ToolsRegistryLike | undefined;
   private readonly deliverer: DeliverablesDelivererLike | undefined;
   private readonly tracker: TurnTracker;
+  /** 群成员目录：把模型写的 [[at:尾号]] 还原成 openid（可选，缺省则原样发送） */
+  private readonly directory: GroupMemberDirectory | undefined;
 
   public constructor(
     manager: SessionManager,
@@ -91,6 +94,7 @@ class OutboundRouter {
     tracker: TurnTracker,
     toolsRegistry: ToolsRegistryLike | undefined,
     deliverer?: DeliverablesDelivererLike,
+    directory?: GroupMemberDirectory,
   ) {
     this.manager = manager;
     this.bot = bot;
@@ -99,6 +103,7 @@ class OutboundRouter {
     this.tracker = tracker;
     this.toolsRegistry = toolsRegistry;
     this.deliverer = deliverer;
+    this.directory = directory;
   }
 
   /** 事件分发入口 */
@@ -191,6 +196,7 @@ class OutboundRouter {
         this.config.textChunkLimit,
         this.logger,
         this.shouldStream(plan),
+        text => this.prepareText(plan.target, text),
       );
       this.buffers.set(sessionId, buffer);
     }
@@ -324,9 +330,25 @@ class OutboundRouter {
     return this.manager.isSessionArchived?.(sessionId) === true;
   }
 
+  /**
+   * 出站正文预处理：群聊里把 [[at:尾号]] 换成官方 @ 标签。
+   *
+   * 必须在切分之前跑——标记被切断就认不出来了。私聊 / 没有目录时不做 @ 解析，
+   * 但也要把标记清掉，不能把内部语法漏给用户。
+   */
+  private prepareText(target: ReplyTarget, text: string): string {
+    if (target.scope !== 'group' || this.directory === undefined) return sanitizeAtMentions(text);
+    const { text: rewritten, rejected } = rewriteGroupAtMentions(text, target.targetId, this.directory);
+    if (rejected.length > 0) {
+      // 丢掉标记意味着模型点错了人：留一条 info，省得只剩「回复里少了几个字」这种谜案
+      this.logger.info(`im-qqbot: at-mention dropped group=${target.targetId} tokens=${rejected.join(',')}`);
+    }
+    return rewritten;
+  }
+
   /** 统一发送：切分 + 逐 chunk 发送 + 错误记录 */
   private async send(target: ReplyTarget, text: string, tag: string): Promise<void> {
-    const chunks = chunkMarkdownText(text, this.config.textChunkLimit);
+    const chunks = chunkMarkdownText(this.prepareText(target, text), this.config.textChunkLimit);
     for (const chunk of chunks) {
       try {
         await this.bot.sendMarkdown(target, chunk);
@@ -378,7 +400,8 @@ export function createTurnTracker(
  * 返回 durable 事件与实时流式帧两个入口，分别注册到
  * ctx.on('session/event') 与 ctx.on('agent/assistant-stream', ..., { global: true })。
  * toolsRegistry 用于工具结果的结构化展示；deliverer 用于轮末投递 present 声明的交付文件；
- * tracker 为回合归属的单一事实源，需与提问/审批/发文件共享时由调用方注入。
+ * tracker 为回合归属的单一事实源，需与提问/审批/发文件共享时由调用方注入；
+ * directory 为群成员目录（入站记录、出站解析 `[[at:...]]` 共用同一实例）。
  */
 export function createOutboundHandler(
   manager: SessionManager,
@@ -388,9 +411,10 @@ export function createOutboundHandler(
   toolsRegistry?: ToolsRegistryLike,
   deliverer?: DeliverablesDelivererLike,
   tracker?: TurnTracker,
+  directory?: GroupMemberDirectory,
 ): OutboundHandlers {
   const turns = tracker ?? createTurnTracker(manager, config, logger);
-  const router = new OutboundRouter(manager, bot, config, logger, turns, toolsRegistry, deliverer);
+  const router = new OutboundRouter(manager, bot, config, logger, turns, toolsRegistry, deliverer, directory);
   return {
     routeSessionEvent: (session, event) => router.route(session, event),
     routeStreamFrame: (agentId, delta) => router.routeStreamFrame(agentId, delta),

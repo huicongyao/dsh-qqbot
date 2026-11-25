@@ -33,6 +33,8 @@ export class OutboundBuffer {
   private readonly logger: Logger;
   /** 构造时拍下的发送目标，本缓冲生命周期内不跟随会话 replyTarget 变化 */
   private readonly target: ReplyTarget;
+  /** 分段/发送前的正文预处理（群聊 @ 标签替换），必须在切分之前跑 */
+  private readonly prepareText: ((text: string) => string) | undefined;
 
   public constructor(
     target: ReplyTarget,
@@ -40,11 +42,13 @@ export class OutboundBuffer {
     limit: number,
     logger: Logger,
     streamingEnabled: boolean,
+    prepareText?: (text: string) => string,
   ) {
     this.bot = bot;
     this.limit = limit;
     this.logger = logger;
     this.target = target;
+    this.prepareText = prepareText;
     this.writer = streamingEnabled
       ? new StreamingWriter({ bot, target: this.target, logger, throttleMs: STREAM_THROTTLE_MS })
       : null;
@@ -80,7 +84,9 @@ export class OutboundBuffer {
       }
 
       // 降级：静态发送（writer 不存在 or 流式失败）
-      const chunks = chunkMarkdownText(this.buffer, this.limit);
+      // 预处理必须早于切分：[[at:...]] 被切成两半就再也认不出来了
+      const prepared = this.prepareText ? this.prepareText(this.buffer) : this.buffer;
+      const chunks = chunkMarkdownText(prepared, this.limit);
       for (const chunk of chunks) {
         await this.bot.sendMarkdown(this.target, chunk);
       }

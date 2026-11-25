@@ -74,11 +74,8 @@ export function normalizePairCode(raw: string): string {
   return raw.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
 }
 
-/** openid 尾号展示（保留后 4 位，其余打码）。 */
-export function openidTail(openid: string): string {
-  const tail = openid.slice(-4);
-  return `…${tail}`;
-}
+/** openid 尾号展示（保留后 4 位，其余打码）；与 prompt 里的打码共用一处实现。 */
+export { maskOpenid as openidTail } from './openid.ts';
 
 type WhitelistEntry = { input: string; openid: string; nickname: string } | ManualPairResult['errors'][number];
 

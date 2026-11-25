@@ -5,6 +5,7 @@ import type { QQBotSender, StreamSessionLike } from './outbound-buffer.ts';
 import type { SessionManager, SessionRecord } from '../session/index.ts';
 import type { ImQQBotConfig } from '../config.ts';
 import type { Logger, ReplyTarget } from '../types.ts';
+import { GroupMemberDirectory } from '../features/at-mention.ts';
 
 function createLogger(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -50,6 +51,7 @@ function setup(opts?: {
   record?: SessionRecord | undefined;
   config?: ImQQBotConfig;
   deliverer?: { deliver: ReturnType<typeof vi.fn> };
+  directory?: GroupMemberDirectory;
 }) {
   const session = createSession();
   const bot = createBot(session);
@@ -58,7 +60,7 @@ function setup(opts?: {
     findBySessionId: vi.fn((id: string) => (id === 'sess-qq' ? record : undefined)),
   } as unknown as SessionManager;
   const outbound = createOutboundHandler(
-    manager, bot, opts?.config ?? createConfig(), createLogger(), undefined, opts?.deliverer,
+    manager, bot, opts?.config ?? createConfig(), createLogger(), undefined, opts?.deliverer, undefined, opts?.directory,
   );
   return { outbound, bot, session };
 }
@@ -666,5 +668,86 @@ describe('OutboundRouter: turn/end blocked（归档门禁）', () => {
 
     expect(bot.sendMarkdown).toHaveBeenCalledWith(c2cTarget, expect.stringContaining('这一轮没有处理成功'));
     expect(bot.sendMarkdown).not.toHaveBeenCalledWith(c2cTarget, expect.stringContaining('已归档'));
+  });
+});
+
+describe('OutboundRouter: 群聊出站 @ 群友', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const ZHANG = '0488A7CE41FC01B9EA0974B3B2B3030E';
+  const sid = { header: { id: 'sess-qq' } };
+
+  function groupSetup() {
+    const directory = new GroupMemberDirectory();
+    directory.record(groupTarget.targetId, ZHANG, '张三');
+    return setup({ record: createRecord(groupTarget), directory });
+  }
+
+  it('[[at:尾号]] 换成官方 @ 标签（直接 assistant/message 路径）', async () => {
+    const { outbound, bot } = groupSetup();
+
+    outbound.routeSessionEvent(sid, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '[[at:030E]] 你来' }] } },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bot.sendMarkdown).toHaveBeenCalledWith(
+      groupTarget,
+      `<qqbot-at-user id="${ZHANG}" /> 你来`,
+    );
+  });
+
+  it('流式帧累积后 flush 也做替换（群聊不流式，走静态发送）', async () => {
+    const { outbound, bot } = groupSetup();
+
+    outbound.routeStreamFrame('sess-qq', start('a1'));
+    outbound.routeStreamFrame('sess-qq', delta('a1', '叫一下 [[at:030E]] '));
+    outbound.routeSessionEvent(sid, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '叫一下 [[at:030E]] ' }] } },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bot.sendMarkdown).toHaveBeenCalledWith(groupTarget, `叫一下 <qqbot-at-user id="${ZHANG}" /> `);
+  });
+
+  it('认不出的尾号整段丢掉，不把 [[at:...]] 漏给用户', async () => {
+    const { outbound, bot } = groupSetup();
+
+    outbound.routeSessionEvent(sid, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '走了 [[at:FFFF]] 别等' }] } },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bot.sendMarkdown).toHaveBeenCalledWith(groupTarget, '走了 别等');
+  });
+
+  it('私聊不做 @ 解析，只把标记清掉（不把内部语法漏出去）', async () => {
+    const directory = new GroupMemberDirectory();
+    directory.record(c2cTarget.targetId, ZHANG, '张三');
+    const { outbound, bot } = setup({ directory });
+
+    outbound.routeSessionEvent(sid, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '[[at:030E]] 你来' }] } },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bot.sendMarkdown).toHaveBeenCalledWith(c2cTarget, '你来');
+  });
+
+  it('没注入目录时群聊只清理标记，不发坏标签', async () => {
+    const { outbound, bot } = setup({ record: createRecord(groupTarget) });
+
+    outbound.routeSessionEvent(sid, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '[[at:030E]] 你来' }] } },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bot.sendMarkdown).toHaveBeenCalledWith(groupTarget, '你来');
   });
 });

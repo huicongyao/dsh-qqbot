@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RULES_TEXT } from './rules.ts';
+import { GROUP_AT_RULES_TEXT, RULES_TEXT, rulesText } from './rules.ts';
 import { parsePersonaSections, selectPersonaText, roleSectionReport } from './persona.ts';
 import { selectExtraPrompt, EXTRA_MAX_CHARS } from './extra.ts';
 import { relTime, clockOf, turnMetaText } from './turn-meta.ts';
@@ -12,6 +12,22 @@ describe('prompt rules', () => {
     expect(RULES_TEXT).not.toContain('工具');
     expect(RULES_TEXT).not.toContain('编造');
     expect(RULES_TEXT).not.toContain('回复');
+  });
+
+  it('群聊多一段 @ 写法，私聊不加', () => {
+    expect(GROUP_AT_RULES_TEXT).toContain('[[at:030E]]');
+    expect(rulesText('group')).toBe(`${RULES_TEXT}\n\n${GROUP_AT_RULES_TEXT}`);
+    expect(rulesText('group')).toContain('最多 3 个');
+    expect(rulesText('c2c')).toBe(RULES_TEXT);
+    expect(rulesText('c2c')).not.toContain('[[at:');
+  });
+
+  it('插件只写机制，判断（该不该 @）留给人设', () => {
+    const group = rulesText('group');
+    expect(group).toContain('写 [[at:尾号]]');
+    expect(group).toContain('最多 3 个');
+    expect(group).not.toContain('闲聊别点名');
+    expect(group).not.toContain('真的需要他来看');
   });
 });
 

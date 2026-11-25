@@ -22,6 +22,15 @@ import {
   type MediaKind,
 } from './attachment.ts';
 import { clearGroupHistory } from '../features/history-store.ts';
+import { cleanDisplayName } from '../shared/display-name.ts';
+import { maskOpenid } from '../shared/openid.ts';
+import {
+  normalizeMentions,
+  rememberSelfMentions,
+  selfMentionIds,
+  type RawMention,
+} from '../shared/mentions.ts';
+import type { GroupMemberDirectory } from '../features/at-mention.ts';
 import { ARCHIVED_SESSION_NOTICE, SESSION_BUSY_NOTICE } from '../shared/session-notice.ts';
 import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 
@@ -38,6 +47,8 @@ interface ProcessedMessage {
   groupOpenid?: string;
   msgType?: number;
   attachments?: RawAttachment[];
+  /** 平台给的 mention 列表（带 is_you / 昵称），用来归一化正文里的 <@openid> */
+  mentions?: RawMention[];
   [key: string]: unknown;
 }
 
@@ -114,6 +125,7 @@ export async function handleInbound(
   config: ImQQBotConfig,
   logger: Logger,
   inputs: QqInputRegistry,
+  directory?: GroupMemberDirectory,
 ): Promise<void> {
   const msg = ctx.message as unknown as ProcessedMessage;
   const mwState = ctx.state as MiddlewareState;
@@ -128,8 +140,13 @@ export async function handleInbound(
     msgId: msg.messageId,
   };
 
+  // 群成员目录：本轮发送者 + 历史里出现过的人，出站 [[at:尾号]] 靠它还原 openid
+  if (scope === 'group' && directory !== undefined) {
+    recordGroupMembers(directory, peerId, msg, mwState.history);
+  }
+
   // ── 组装 agentBody（下载结果经 mwState.downloadedFiles 提供） ──
-  const agentBody = assembleAgentBody(msg, mwState, scope, logger);
+  const agentBody = assembleAgentBody(msg, mwState, scope, logger, directory);
 
   if (!agentBody) return;
 
@@ -196,6 +213,7 @@ function assembleAgentBody(
   state: MiddlewareState,
   scope: ChatScope,
   logger: Logger,
+  directory?: GroupMemberDirectory,
 ): string | null {
   const isGroup = scope === 'group';
   const wasMentioned = state.mention?.wasMentioned ?? false;
@@ -205,15 +223,71 @@ function assembleAgentBody(
 
   if (isEmptyMessage(userContent, msg.attachments, isGroup, wasMentioned || implicit)) return null;
 
+  // 正文里的 <@openid> 统一换掉：自己是删、认得的人给名字、认不得的只留尾号
+  const normalize = buildMentionNormalizer(msg, scope, directory);
+
   const quotePart = buildQuotePart(state.quote);
-  const userMessage = buildUserMessage(userContent, quotePart, msg.senderId, msg.senderName, isGroup, wasMentioned);
+  const userMessage = buildUserMessage(
+    normalize(userContent), normalize(quotePart), msg.senderId, msg.senderName, isGroup, wasMentioned,
+  );
 
   const dynamicCtx = buildDynamicCtx(msg, state);
 
   const base = dynamicCtx ? `${dynamicCtx}${userMessage}` : userMessage;
-  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, implicit);
+  const agentBody = buildAgentBody(base, state.history, isGroup, wasMentioned, implicit, normalize);
 
   return agentBody;
+}
+
+/**
+ * 组装 mention 归一化器。
+ *
+ * 顺带做两件副作用，都是为了一次消息就能「学会」这个群里的人：
+ * - 机器人自己的 openid 按群记下来（历史消息没有 mentions 数组，靠它认自 @）
+ * - 被 @ 到的人记进群成员目录（否则模型看得见名字、出站却解析不出 openid）
+ */
+export interface MentionSource {
+  mentions?: RawMention[];
+  groupOpenid?: string;
+  senderId: string;
+}
+
+export function buildMentionNormalizer(
+  msg: MentionSource,
+  scope: ChatScope,
+  directory?: GroupMemberDirectory,
+): (text: string) => string {
+  const mentions = Array.isArray(msg.mentions) ? msg.mentions : [];
+  const groupId = msg.groupOpenid ?? msg.senderId;
+
+  if (scope === 'group' && groupId) {
+    const selfIds = mentions
+      .filter(mention => mention?.is_you === true)
+      .flatMap(mention => [mention.member_openid, mention.user_openid, mention.id])
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (selfIds.length > 0) rememberSelfMentions(groupId, selfIds);
+
+    if (directory !== undefined) {
+      for (const mention of mentions) {
+        // 自己（以及其他机器人）不进目录：否则模型能 @ 机器人本身
+        if (mention?.is_you === true || mention?.bot === true) continue;
+        const id = mention?.member_openid ?? mention?.user_openid;
+        if (typeof id === 'string' && id) {
+          directory.record(groupId, id, mention.nickname ?? mention.username);
+        }
+      }
+    }
+  }
+
+  const selfIds = scope === 'group' && groupId ? selfMentionIds(groupId) : new Set<string>();
+
+  return (text: string): string => normalizeMentions(text, {
+    mentions,
+    selfIds,
+    resolveName: directory && groupId
+      ? id => directory.resolve(groupId, id)?.name
+      : undefined,
+  });
 }
 
 /**
@@ -274,7 +348,7 @@ function buildQuotePart(quote?: ResolvedQuote): string {
 /**
  * Layer 3: 带发送者标签的用户消息
  */
-function buildUserMessage(
+export function buildUserMessage(
   userContent: string,
   quotePart: string,
   senderId: string,
@@ -287,9 +361,10 @@ function buildUserMessage(
   }
 
   const mentionTag = wasMentioned ? ' (@you)' : '';
-  const displayName = senderName ?? shortSenderId(senderId);
-  const senderTag = `[${displayName} (${senderId})]`;
-  return `${quotePart}${senderTag} ${userContent}${mentionTag}`;
+  const senderTag = formatSenderTag(senderId, senderName);
+  // 正文可能被清洗成空（比如只 @ 了机器人一句），别留下多余空格
+  const body = userContent ? `${senderTag} ${userContent}` : senderTag;
+  return `${quotePart}${body}${mentionTag}`;
 }
 
 /**
@@ -374,8 +449,7 @@ function renderMediaLine(
 /**
  * 插话提示：这条没人 @ 她，是她自己凑上去的，接不接由她自己判断。
  */
-const IMPLICIT_INTERJECT_HINT =
-  '[这条消息没有 @ 你，你是自己接话的。想接就自然接一句，不想接就当作没看见、保持安静。]';
+const IMPLICIT_INTERJECT_HINT = '[没人叫你，你自己凑过去接的话。]';
 
 /**
  * Layer 5: 最终 agentBody 拼合
@@ -386,6 +460,7 @@ export function buildAgentBody(
   isGroup: boolean,
   wasMentioned: boolean,
   implicit: boolean,
+  normalizeText?: (text: string) => string,
 ): string {
   // 插话时也带上群里的上下文：没人 @ 她，但她在接群里的话
   if (!isGroup || !(wasMentioned || implicit) || !history || history.length === 0) {
@@ -393,8 +468,8 @@ export function buildAgentBody(
   }
 
   const historyLines = history.map(h => {
-    const name = h.senderName ?? shortSenderId(h.senderId);
-    return `[${name} (${h.senderId})] ${h.content}`;
+    const content = normalizeText ? normalizeText(h.content) : h.content;
+    return `${formatSenderTag(h.senderId, h.senderName)} ${content}`;
   });
 
   return [
@@ -484,10 +559,32 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-/** 发送者短标识长度（openid 前 N 位，无昵称时兜底） */
-const SENDER_SHORT_ID_LEN = 8;
+/**
+ * 把群成员（含历史里说过话的人）记进目录，只留最近出现的一批。
+ *
+ * groupId 必须是群 openid —— 出站时 ReplyTarget.targetId 也是它，两边必须同一个 key。
+ */
+export function recordGroupMembers(
+  directory: GroupMemberDirectory,
+  groupId: string,
+  msg: Pick<ProcessedMessage, 'senderId' | 'senderName'>,
+  history?: Array<Pick<HistoryEntry, 'senderId' | 'senderName'>>,
+): void {
+  if (typeof msg.senderId === 'string') directory.record(groupId, msg.senderId, msg.senderName);
+  for (const entry of history ?? []) {
+    if (typeof entry.senderId === 'string') directory.record(groupId, entry.senderId, entry.senderName);
+  }
+}
 
-/** 无昵称时用 openid 前 N 位作为匿名标识 */
-function shortSenderId(senderId: string): string {
-  return senderId.slice(0, SENDER_SHORT_ID_LEN);
+/**
+ * 群聊里的发送者标签：[昵称 (…尾号)]。
+ *
+ * 只带 openid 尾号——模型能区分不同的群友（以及出站 @ 时认人），
+ * 但完整 openid 不落到上下文里。没昵称时只留尾号，避免把前缀当匿名标识。
+ */
+function formatSenderTag(senderId: string, senderName?: string): string {
+  const handle = maskOpenid(senderId);
+  // 群名片是用户可控的：换行/超长/控制符会把消息行结构搞坏，先洗一遍
+  const name = cleanDisplayName(senderName);
+  return name ? `[${name} (${handle})]` : `[${handle}]`;
 }

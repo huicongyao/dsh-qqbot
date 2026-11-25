@@ -80,9 +80,9 @@ describe('installQQPrompt (DSH section/context 注册)', () => {
     let current: QQTurnContext | undefined;
     const h = installQQPrompt(sp.ctx, entry({ turnContext: () => current }));
     expect(sp.renderContexts()).toBe('');
-    current = { turnMetaText: turnMetaText({ scope: 'group', senderName: '张三', senderId: 'openid-123', mentioned: true, at: 1000, now: 1000 + 120000 }), backgroundText: 'Earlier group message {{literal}}' };
+    current = { turnMetaText: turnMetaText({ scope: 'group', senderName: '张三', senderId: '0488A7CE41FC01B9EA0974B3B2B3030E', mentioned: true, at: 1000, now: 1000 + 120000 }), backgroundText: 'Earlier group message {{literal}}' };
     const m = sp.renderContexts();
-    expect(m).toContain('QQ 群聊'); expect(m).toContain('@ 了你'); expect(m).toContain('发送者：张三（QQ openid-123）'); expect(m).toContain('「张三」'); expect(m).toContain('2 分钟前');
+    expect(m).toContain('QQ 群聊'); expect(m).toContain('@ 了你'); expect(m).toContain('发送者：张三（QQ …030E）'); expect(m).not.toContain('0488A7CE41FC01B9EA0974B3B2B3030E'); expect(m).toContain('「张三」'); expect(m).toContain('2 分钟前');
     expect(m).toContain('Earlier group message {{literal}}');
     expect(m).toContain('仅作为背景');
     expect(sp.renderContexts()).toBe(m);
