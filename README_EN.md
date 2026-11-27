@@ -107,7 +107,9 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `sessionIdleTimeout` | number | `1800000` | Session idle timeout (ms), default 30 min; `<=0` disables eviction |
 | `processingTimeoutMs` | number | `1800000` | Processing timeout (ms), aborts the current LLM call |
 | `maxQueue` | number | `20` | Max concurrent queue length |
-| `historyLimit` | number | `10` | Group history buffer size |
+| `historyLimit` | number | `10` | Max group history entries per prompt |
+| `historyMaxAgeSec` | number | `1800` | Group history time window in seconds; older entries are dropped (min 60) |
+| `historyMedia.enabled` | boolean | `true` | Also download images for messages that only enter group history (every group image lands on disk; bounded by `media.maxMB` / `media.ttlHours`) |
 | `askTimeoutMs` | number | `300000` | Question timeout (ms), default 5 min (ask_user_question) |
 | `showToolResults` | boolean | `false` | Show successful tool-call results (errors always shown) |
 | `debug` | boolean | `false` | Debug mode |

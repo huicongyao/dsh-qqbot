@@ -136,6 +136,65 @@ describe('decideInterject', () => {
   });
 });
 
+describe('保底触发（pityMessages）', () => {
+  const now = at(14);
+
+  it('连续攒够保底条数就强制插，不再看概率', () => {
+    const decision = decideInterject({
+      policy: ON, now, hour: 14,
+      recentTimes: recent(now, 5), interjectTimes: [],
+      sinceLastInterject: 15, random: () => 0.99,
+    });
+    expect(decision.pass).toBe(true);
+    expect(decision.reason).toContain('保底');
+  });
+
+  it('差一条不保底，照常按概率（没中）', () => {
+    const decision = decideInterject({
+      policy: ON, now, hour: 14,
+      recentTimes: recent(now, 5), interjectTimes: [],
+      sinceLastInterject: 14, random: () => 0.99,
+    });
+    expect(decision.pass).toBe(false);
+    expect(decision.reason).toContain('这次不插话');
+  });
+
+  it('pityMessages=0 关闭保底', () => {
+    const decision = decideInterject({
+      policy: { ...ON, pityMessages: 0 }, now, hour: 14,
+      recentTimes: recent(now, 5), interjectTimes: [],
+      sinceLastInterject: 100, random: () => 0.99,
+    });
+    expect(decision.pass).toBe(false);
+  });
+
+  it('保底也过不了开关、静默时段和每小时上限', () => {
+    const base = { now, hour: 14, recentTimes: recent(now, 5), interjectTimes: [], sinceLastInterject: 100, random: () => 0.99 };
+    expect(decideInterject({ ...base, policy: { ...ON, enabled: false } }).pass).toBe(false);
+    expect(decideInterject({ ...base, hour: 3, policy: ON }).pass).toBe(false);
+    expect(decideInterject({ ...base, policy: { ...ON, maxPerHour: 1 }, interjectTimes: [now - 60_000] }).pass).toBe(false);
+  });
+
+  it('tracker 在第 15 条触发，触发后计数重置', () => {
+    let current = now;
+    const tracker = createInterjectTracker({ now: () => current, random: () => 0.99 });
+    const policy = { ...ON, chance: 0, pityMessages: 15 };
+
+    for (let i = 0; i < 14; i += 1) tracker.note('g1');
+    expect(tracker.shouldInterject('g1', policy).pass).toBe(false);
+
+    tracker.note('g1'); // 第 15 条
+    const decision = tracker.shouldInterject('g1', policy);
+    expect(decision.pass).toBe(true);
+    expect(decision.reason).toContain('保底');
+
+    // 冷却过后再攒 1 条，不该立刻又保底
+    current += 61_000;
+    tracker.note('g1');
+    expect(tracker.shouldInterject('g1', policy).pass).toBe(false);
+  });
+});
+
 describe('createInterjectTracker', () => {
   function setup(random = () => 0.1) {
     let current = at(14);

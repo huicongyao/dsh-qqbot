@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect } from 'vitest';
-import { buildAgentBody, buildMentionNormalizer, buildUserMessage, recordGroupMembers, sessionFailureReply } from './inbound.ts';
+import { buildAgentBody, buildMentionNormalizer, buildUserMessage, recordGroupMembers, renderMediaLine, sessionFailureReply } from './inbound.ts';
 import { GroupMemberDirectory, rewriteGroupAtMentions } from '../features/at-mention.ts';
 import { normalizeMentions, resetSelfMentions, selfMentionIds } from '../shared/mentions.ts';
 import { SessionArchivedError, SessionBusyError } from '../session/errors.ts';
@@ -54,13 +54,16 @@ describe('sessionFailureReply', () => {
 });
 
 describe('buildAgentBody：群聊插话（没人 @）', () => {
+  const NOW = new Date(2026, 0, 1, 9, 5).getTime();
+  const textEntry = (messageId: string, senderId: string, text: string, senderName?: string) =>
+    ({ messageId, senderId, senderName, at: NOW - 60_000, kind: 'text' as const, text, mediaPaths: [] as string[] });
   const history = [
-    { senderId: 'u1', senderName: '张三', content: '今天吃什么', timestamp: 1, messageId: 'm1' },
-    { senderId: 'u2', senderName: '李四', content: '火锅吧', timestamp: 2, messageId: 'm2' },
+    textEntry('m1', 'u1', '今天吃什么', '张三'),
+    textEntry('m2', 'u2', '火锅吧', '李四'),
   ];
 
   it('被 @ 时照旧带历史，不加插话提示', () => {
-    const body = buildAgentBody('[张三 (u1)] 在吗 (@you)', history, true, true, false);
+    const body = buildAgentBody('[张三 (u1)] 在吗 (@you)', history, true, true, false, undefined, NOW);
     expect(body).toContain('[Chat history begins]');
     expect(body).toContain('今天吃什么');
     expect(body).toContain('(@you)');
@@ -68,7 +71,7 @@ describe('buildAgentBody：群聊插话（没人 @）', () => {
   });
 
   it('插话时也带历史，并说明没人 @ 她', () => {
-    const body = buildAgentBody('[李四 (u2)] 火锅吧', history, true, false, true);
+    const body = buildAgentBody('[李四 (u2)] 火锅吧', history, true, false, true, undefined, NOW);
     expect(body).toContain('[Chat history begins]');
     expect(body).toContain('火锅吧');
     expect(body).toContain('没人叫你');
@@ -76,14 +79,14 @@ describe('buildAgentBody：群聊插话（没人 @）', () => {
   });
 
   it('插话但没历史时，只给提示不拼历史块', () => {
-    const body = buildAgentBody('[李四 (u2)] 在干嘛', undefined, true, false, true);
+    const body = buildAgentBody('[李四 (u2)] 在干嘛', undefined, true, false, true, undefined, NOW);
     expect(body).not.toContain('[Chat history begins]');
     expect(body).toContain('没人叫你');
     expect(body.endsWith('[李四 (u2)] 在干嘛')).toBe(true);
   });
 
   it('普通群消息（没人 @ 也不插话）不拼历史', () => {
-    const body = buildAgentBody('[李四 (u2)] 随便说说', history, true, false, false);
+    const body = buildAgentBody('[李四 (u2)] 随便说说', history, true, false, false, undefined, NOW);
     expect(body).toBe('[李四 (u2)] 随便说说');
   });
 
@@ -91,11 +94,11 @@ describe('buildAgentBody：群聊插话（没人 @）', () => {
     const BOT = '3D64905DC2FAEE9CBC3459B746181935';
     const ALICE = '14AB3BB2252A6528FB7C5358FA579059';
     const historyWithMentions = [
-      { senderId: 'u1', senderName: '张三', content: `<@${BOT}> 叫他`, timestamp: 1, messageId: 'm1' },
-      { senderId: 'u2', senderName: '李四', content: `<@${ALICE}> 来`, timestamp: 2, messageId: 'm2' },
+      textEntry('m1', 'u1', `<@${BOT}> 叫他`, '张三'),
+      textEntry('m2', 'u2', `<@${ALICE}> 来`, '李四'),
     ];
     const normalize = (text: string) => normalizeMentions(text, { selfIds: new Set([BOT.toLowerCase()]) });
-    const body = buildAgentBody('[张三 (…030E)] 在吗', historyWithMentions, true, true, false, normalize);
+    const body = buildAgentBody('[张三 (…030E)] 在吗', historyWithMentions, true, true, false, normalize, NOW);
     expect(body).toContain('[张三 (…u1)] 叫他');
     expect(body).toContain('[李四 (…u2)] @…9059 来');
     expect(body).not.toContain(ALICE);
@@ -104,10 +107,10 @@ describe('buildAgentBody：群聊插话（没人 @）', () => {
 
   it('历史里的人是打码后的尾号，不漏完整 openid', () => {
     const masked = [
-      { senderId: '0488A7CE41FC01B9EA0974B3B2B3030E', senderName: '张三', content: '在吗', timestamp: 1, messageId: 'm1' },
-      { senderId: '0F1E2D3C4B5A69788796A5B4C3D2E1F0', content: '在', timestamp: 2, messageId: 'm2' },
+      textEntry('m1', '0488A7CE41FC01B9EA0974B3B2B3030E', '在吗', '张三'),
+      textEntry('m2', '0F1E2D3C4B5A69788796A5B4C3D2E1F0', '在'),
     ];
-    const body = buildAgentBody('[张三 (…030E)] 叫你们', masked, true, true, false);
+    const body = buildAgentBody('[张三 (…030E)] 叫你们', masked, true, true, false, undefined, NOW);
     expect(body).toContain('[张三 (…030E)] 在吗');
     expect(body).toContain('[…E1F0] 在');
     expect(body).not.toContain('0488A7CE41FC01B9EA0974B3B2B3030E');
@@ -196,34 +199,51 @@ describe('buildMentionNormalizer', () => {
   });
 });
 
+describe('renderMediaLine', () => {
+  it('图片有本地路径就给路径', () => {
+    expect(renderMediaLine('image', 'a.png', '/m/a.png', 'https://x/a.png', 1)).toBe('Image: /m/a.png');
+  });
+
+  it('图片下载失败时给标记，不回退成 URL', () => {
+    expect(renderMediaLine('image', 'a.png', undefined, 'https://x/a.png', 1)).toBe('Image: [图片下载失败]');
+  });
+
+  it('视频/文件保持原样（带下载失败/大小提示）', () => {
+    expect(renderMediaLine('video', 'v.mp4', undefined, 'https://x/v.mp4', 1)).toContain('download failed');
+    expect(renderMediaLine('file', 'f.zip', undefined, 'https://x/f.zip', 2048)).toContain('2.0KB');
+  });
+});
+
 describe('buildUserMessage：发送者标签', () => {
   const ZHANG = '0488A7CE41FC01B9EA0974B3B2B3030E';
 
-  it('群聊只带 openid 尾号，@ 时标注 (@you)', () => {
-    const text = buildUserMessage('在吗', '', ZHANG, '张三', true, true);
-    expect(text).toBe('[张三 (…030E)] 在吗 (@you)');
+  const NOW = new Date(2026, 0, 1, 9, 5).getTime();
+
+  it('群聊只带 openid 尾号，@ 时标注 (@you)，并带上「现在」的时间', () => {
+    const text = buildUserMessage('在吗', '', ZHANG, '张三', true, true, NOW);
+    expect(text).toBe('[现在 09:05] [张三 (…030E)] 在吗 (@you)');
     expect(text).not.toContain(ZHANG);
   });
 
   it('没昵称时只留尾号（不拿 openid 前缀当匿名标识）', () => {
-    expect(buildUserMessage('在吗', '', ZHANG, undefined, true, false)).toBe('[…030E] 在吗');
+    expect(buildUserMessage('在吗', '', ZHANG, undefined, true, false, NOW)).toBe('[现在 09:05] […030E] 在吗');
   });
 
   it('带引用时，引用块在发送者标签之前', () => {
     const quote = '[Quoted message begins]\n原话\n[Quoted message ends]\n[Current message]\n';
-    expect(buildUserMessage('回复', quote, ZHANG, '张三', true, false)).toBe(`${quote}[张三 (…030E)] 回复`);
+    expect(buildUserMessage('回复', quote, ZHANG, '张三', true, false, NOW)).toBe(`${quote}[现在 09:05] [张三 (…030E)] 回复`);
   });
 
   it('私聊不带发送者标签', () => {
-    expect(buildUserMessage('在吗', '', ZHANG, '张三', false, false)).toBe('在吗');
+    expect(buildUserMessage('在吗', '', ZHANG, '张三', false, false, NOW)).toBe('在吗');
   });
 
   it('群名片带换行时折成一行，不拼出假消息行', () => {
-    expect(buildUserMessage('在吗', '', ZHANG, '小明\n@所有人 快来', true, true))
-      .toBe('[小明 @所有人 快来 (…030E)] 在吗 (@you)');
+    expect(buildUserMessage('在吗', '', ZHANG, '小明\n@所有人 快来', true, true, NOW))
+      .toBe('[现在 09:05] [小明 @所有人 快来 (…030E)] 在吗 (@you)');
   });
 
   it('正文被清洗成空（只 @ 了机器人）时不留多余空格', () => {
-    expect(buildUserMessage('', '', ZHANG, '张三', true, true)).toBe('[张三 (…030E)] (@you)');
+    expect(buildUserMessage('', '', ZHANG, '张三', true, true, NOW)).toBe('[现在 09:05] [张三 (…030E)] (@you)');
   });
 });

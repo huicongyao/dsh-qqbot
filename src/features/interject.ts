@@ -24,6 +24,8 @@ export interface GroupInterjectConfig {
   minRecentMessages: number;
   /** 判断「在聊」的回看窗口（秒） */
   activeWindowSec: number;
+  /** 保底：连续多少条群消息没接话就强制插一次；0 = 关闭 */
+  pityMessages: number;
 }
 
 export const DEFAULT_GROUP_INTERJECT: GroupInterjectConfig = {
@@ -34,6 +36,7 @@ export const DEFAULT_GROUP_INTERJECT: GroupInterjectConfig = {
   quietHours: [1, 8],
   minRecentMessages: 3,
   activeWindowSec: 300,
+  pityMessages: 15,
 };
 
 export interface InterjectDecision {
@@ -69,6 +72,8 @@ export function decideInterject(p: {
   hour: number;
   recentTimes?: number[];
   interjectTimes?: number[];
+  /** 距离上一次插话（或启动）以来，群里又说了多少条 */
+  sinceLastInterject?: number;
   random?: () => number;
 }): InterjectDecision {
   const pol = p.policy ?? DEFAULT_GROUP_INTERJECT;
@@ -77,16 +82,23 @@ export function decideInterject(p: {
   if (!pol.enabled) return { pass: false, reason: '插话关着' };
   if (inQuietHours(p.hour, pol.quietHours)) return { pass: false, reason: '静默时段' };
 
-  const window = Math.max(0, Number(pol.activeWindowSec) || 0) * 1000;
-  const recent = (p.recentTimes ?? []).filter((t) => p.now - t < window).length;
-  if (recent < Math.max(1, Number(pol.minRecentMessages) || 1)) {
-    return { pass: false, reason: `群里没在聊（${recent} 条）` };
-  }
-
   const interjects = p.interjectTimes ?? [];
   const lastHour = interjects.filter((t) => p.now - t < HOUR_MS).length;
   if (lastHour >= Math.max(1, Number(pol.maxPerHour) || 1)) {
     return { pass: false, reason: `这小时插话够多了（${lastHour} 次）` };
+  }
+
+  // 保底：连续攒够 pityMessages 条没接话，就不再掷骰子，直接接一句
+  const pity = Math.max(0, Math.floor(Number(pol.pityMessages) || 0));
+  const sinceLast = Math.max(0, Math.floor(Number(p.sinceLastInterject) || 0));
+  if (pity > 0 && sinceLast >= pity) {
+    return { pass: true, reason: `保底（连续 ${sinceLast} 条没接话）` };
+  }
+
+  const window = Math.max(0, Number(pol.activeWindowSec) || 0) * 1000;
+  const recent = (p.recentTimes ?? []).filter((t) => p.now - t < window).length;
+  if (recent < Math.max(1, Number(pol.minRecentMessages) || 1)) {
+    return { pass: false, reason: `群里没在聊（${recent} 条）` };
   }
 
   const last = interjects.length > 0 ? Math.max(...interjects) : 0;
@@ -124,6 +136,8 @@ export function createInterjectTracker(options: {
   const maxGroups = Math.max(1, options.maxGroups ?? 500);
   const messages = new Map<string, number[]>();
   const interjects = new Map<string, number[]>();
+  /** 每个群自上次插话以来又说了多少条（保底用） */
+  const pending = new Map<string, number>();
 
   /** 只留最近一小时，顺带把群数压在上限内 */
   function trim(map: Map<string, number[]>, key: string, list: number[], at: number): number[] {
@@ -142,6 +156,11 @@ export function createInterjectTracker(options: {
       const list = messages.get(groupKey) ?? [];
       list.push(at);
       trim(messages, groupKey, list, at);
+      pending.set(groupKey, (pending.get(groupKey) ?? 0) + 1);
+      if (pending.size > maxGroups) {
+        const oldest = pending.keys().next().value;
+        if (oldest !== undefined && oldest !== groupKey) pending.delete(oldest);
+      }
     },
 
     shouldInterject(groupKey, policy) {
@@ -153,10 +172,12 @@ export function createInterjectTracker(options: {
         hour: new Date(at).getHours(),
         recentTimes: trim(messages, groupKey, messages.get(groupKey) ?? [], at),
         interjectTimes: trim(interjects, groupKey, interjects.get(groupKey) ?? [], at),
+        sinceLastInterject: pending.get(groupKey) ?? 0,
         random,
       });
       if (decision.pass) {
         interjects.set(groupKey, [...(interjects.get(groupKey) ?? []), at]);
+        pending.set(groupKey, 0);
       }
       return decision;
     },
@@ -164,6 +185,7 @@ export function createInterjectTracker(options: {
     reset() {
       messages.clear();
       interjects.clear();
+      pending.clear();
     },
   };
 }

@@ -102,6 +102,10 @@ export interface ImQQBotConfig {
   askTimeoutMs: number;
   /** 群历史缓冲条数 */
   historyLimit: number;
+  /** 群历史时间窗（秒）：更早的消息不再带进 prompt */
+  historyMaxAgeSec: number;
+  /** 历史媒体：给只进历史、不触发 agent 的图片也下载本地路径 */
+  historyMedia: { enabled: boolean };
   /** 访问控制 */
   access: AccessControlConfig;
   /** 是否展示工具调用成功结果（工具错误始终展示） */
@@ -143,6 +147,8 @@ export const GroupInterjectSchema: Schema<GroupInterjectConfig> = Schema.object(
     .description('回看窗口内至少多少条群消息才算「在聊」'),
   activeWindowSec: Schema.number().min(30).default(DEFAULT_GROUP_INTERJECT.activeWindowSec)
     .description('判断「在聊」的回看窗口（秒）'),
+  pityMessages: Schema.number().min(0).default(DEFAULT_GROUP_INTERJECT.pityMessages)
+    .description('保底：连续多少条群消息没接话就强制插一次（0 = 关闭）'),
 });
 
 export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
@@ -163,6 +169,10 @@ export const ConfigSchema: Schema<ImQQBotConfig> = Schema.object({
   processingTimeoutMs: Schema.number().default(30 * 60 * 1000).description('处理超时(ms)，超时中断当前 LLM 调用'),
   askTimeoutMs: Schema.number().default(5 * 60 * 1000).description('待答问题超时(ms)，超时自动拒绝并提示'),
   historyLimit: Schema.number().default(10).description('群历史缓冲条数'),
+  historyMaxAgeSec: Schema.number().default(30 * 60).description('群历史时间窗（秒），更早的消息不再带进 prompt'),
+  historyMedia: Schema.object({
+    enabled: Schema.boolean().default(true).description('给只进群历史的图片/表情也下载本地路径（群里每张图都会落盘）'),
+  }).default({ enabled: true }).description('历史媒体下载'),
   access: AccessControlSchema.default({
     c2cMode: 'open',
     c2cAllow: [],

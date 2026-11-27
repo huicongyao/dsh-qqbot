@@ -16,6 +16,7 @@ export interface GroupInterjectWire {
   quietHours: number[];
   minRecentMessages: number;
   activeWindowSec: number;
+  pityMessages: number;
 }
 
 /** 与服务端 DEFAULT_GROUP_INTERJECT 对齐的表单默认值 */
@@ -27,6 +28,7 @@ export const DEFAULT_INTERJECT_WIRE: GroupInterjectWire = {
   quietHours: [1, 8],
   minRecentMessages: 3,
   activeWindowSec: 300,
+  pityMessages: 15,
 };
 
 /** Credential secrets are never included in the browser settings response. */

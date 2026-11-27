@@ -8,14 +8,22 @@ import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import { downloadMediaAttachments } from '../transport/attachment.ts';
 import type { ImQQBotConfig } from '../config.ts';
 import type { Logger, QuotedAttachment, RawAttachment } from '../types.ts';
+import type { PreDownloadedMedia } from './history-media.ts';
 
 export function attachmentProcessor(config: ImQQBotConfig, logger: Logger) {
   return async (ctx: MiddlewareContext, next: () => Promise<void>): Promise<void> => {
     const msg = ctx.message as { attachments?: RawAttachment[] };
 
     try {
-      // 当前消息附件
-      const downloaded = await downloadMediaAttachments(msg.attachments, config.media, logger);
+      // 历史媒体中间件已经下过一部分（它会挂到 ctx.state.historyMedia），这里复用，别下两次
+      const pre = (ctx.state as { historyMedia?: PreDownloadedMedia }).historyMedia;
+      const remaining = pre
+        ? (msg.attachments ?? []).filter((att) => !pre.attachments.includes(att))
+        : msg.attachments;
+      const downloaded = [
+        ...(pre?.files ?? []),
+        ...await downloadMediaAttachments(remaining, config.media, logger),
+      ];
       ctx.state.downloadedFiles = downloaded;
 
       // 引用消息附件：转成 RawAttachment 结构复用下载（voice 由 downloadMediaAttachments 自动跳过）

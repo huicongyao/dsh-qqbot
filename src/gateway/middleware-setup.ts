@@ -16,16 +16,16 @@ import {
   concurrencyGuard,
   typingIndicator,
   quoteRef,
-  historyBuffer,
-  envelopeFormatter,
 } from '@tencent-connect/qqbot-nodejs';
+import type { MiddlewareContext } from '@tencent-connect/qqbot-nodejs';
 import type { ImQQBotConfig } from '../config.ts';
 import type { SessionManager } from '../session/index.ts';
 import type { Logger } from '../types.ts';
 import { buildCommandList } from '../commands/index.ts';
 import { attachmentProcessor } from '../middleware/attachment.ts';
 import { questionAnswer } from '../middleware/question-answer.ts';
-import { getHistoryStore, historyGroupKey } from '../features/history-store.ts';
+import { getGroupHistory, groupHistoryMiddleware, toHistoryLimits } from '../features/group-history.ts';
+import { historyMediaProcessor } from '../middleware/history-media.ts';
 import { createInterjectTracker, type InterjectTracker } from '../features/interject.ts';
 import { messageSenderName } from '../shared/message-sender-name.ts';
 
@@ -106,21 +106,20 @@ export function setupMiddlewares(
     })(ctx, next);
   });
 
-  // 4. 群历史缓冲 — 放在门控之前，确保所有消息（含未 @bot）都计入上下文
-  //    store 走共享单例（getHistoryStore），groupKey 带 appId 前缀，供回复后清空
-  bot.use(historyBuffer({
-    limit: config.historyLimit,
-    store: getHistoryStore(),
-    recordOnSkip: true,
-    groupKey: (ctx) => {
-      const gid = ctx.message.groupOpenid;
-      if (ctx.message.kind !== 'group' || !gid) return undefined;
-      return historyGroupKey(config.appId, gid);
-    },
+  // 4. 群历史 — 放在门控之前，确保所有消息（含未 @bot）都记下来
+  //    插件自建：结构化条目 + 消费水位 + 条数/时间双限（SDK 的 historyBuffer 已撤掉）
+  bot.use(groupHistoryMiddleware({
+    appId: config.appId,
+    store: getGroupHistory(),
+    limits: () => toHistoryLimits(config.historyLimit, config.historyMaxAgeSec),
   }));
 
+  // 4.2 历史媒体：给只会进历史、不会触发 agent 的图片也下载本地路径
+  //      （放在门控之前；下载结果挂到历史条目上，模型可以 read_image）
+  bot.use(historyMediaProcessor(config, logger, getGroupHistory()));
+
   // 4.5 群聊活跃度：每条群消息都记一笔（包括后面会被门控挡掉的），
-  //     用来判断「群里是不是在聊」，历史缓冲被清空后也不受影响
+  //     用来判断「群里是不是在聊」；只记时间戳，和群历史是两套独立状态
   bot.use((ctx, next) => {
     if (ctx.message.kind === 'group' && ctx.message.groupOpenid) {
       interject.note(ctx.message.groupOpenid);
@@ -161,10 +160,13 @@ export function setupMiddlewares(
   bot.use(questionAnswer(manager));
 
   // 9. 并发串行 + 消息合并（同 peer 排队，避免 session 冲突）
+  //    合并批次里被并进 survivor 的消息不再单独成回合，它们的 messageId 记在
+  //    survivor.state.mergedMessageIds 上，入站组包时过滤掉，避免「当前消息」和「历史」各出现一次
   bot.use(concurrencyGuard({
     strategy: 'merge',
     maxQueue: config.maxQueue,
     maxProcessingMs: config.processingTimeoutMs,
+    onMerge: mergeContextBatch,
   }));
 
   // 10. C2C 输入状态指示
@@ -179,10 +181,36 @@ export function setupMiddlewares(
   // 11.5. 附件下载（file 附件下载到本地，供 @提及 / 工具访问）
   bot.use(attachmentProcessor(config, logger));
 
-  // 12. 上下文组装（将 history + quote + sender 组成 envelope）
-  bot.use(envelopeFormatter({
-    historyLimit: config.historyLimit,
-    includeQuote: true,
-    includeSender: true,
-  }));
+  // 说明：SDK 的 envelopeFormatter 不再挂载——它读的是 `h.content`，而插件的
+  // 结构化历史只有 `text`，历史非空时会在中间件里抛 TypeError；插件也从未消费
+  // `ctx.state.envelope`（入站自己拼 body）。
+}
+
+/**
+ * concurrencyGuard 的合批回调：复刻 SDK 默认合并（正文/附件拼进第一条），
+ * 额外把被合并消息的 messageId 记在 survivor 上，供入站过滤重复内容。
+ */
+export function mergeContextBatch(buffered: MiddlewareContext[]): MiddlewareContext {
+  const [first, ...rest] = buffered;
+  if (first === undefined) throw new Error('mergeContextBatch: empty batch');
+  if (rest.length === 0) return first;
+
+  const contentBearing = buffered.filter(ctx => (ctx.message.content ?? '') !== '');
+  if (contentBearing.length > 0) {
+    (first.message as { content?: string }).content = contentBearing
+      .map(ctx => ctx.message.content)
+      .join('\n');
+  }
+  const attachments = contentBearing.flatMap(ctx => ctx.message.attachments ?? []);
+  if (attachments.length > 0) {
+    (first.message as { attachments?: unknown }).attachments = attachments;
+  }
+
+  const mergedIds = rest
+    .map(ctx => ctx.message.messageId)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  if (mergedIds.length > 0) {
+    (first.state as Record<string, unknown>).mergedMessageIds = mergedIds;
+  }
+  return first;
 }

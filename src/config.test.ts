@@ -58,6 +58,7 @@ describe('ConfigSchema：群聊插话默认值', () => {
       quietHours: [1, 8],
       minRecentMessages: 3,
       activeWindowSec: 300,
+      pityMessages: 15,
     });
   });
 

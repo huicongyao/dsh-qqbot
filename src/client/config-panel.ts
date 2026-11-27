@@ -56,7 +56,7 @@ function GroupInterjectFields({ value, onChange }: {
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
   };
   const numberRow = (
-    key: 'cooldownSec' | 'maxPerHour' | 'minRecentMessages' | 'activeWindowSec',
+    key: 'cooldownSec' | 'maxPerHour' | 'minRecentMessages' | 'activeWindowSec' | 'pityMessages',
     label: string, min: number, max: number, step: number, hint: string,
   ): ReactNode => createElement('div', { className: 'imqb-cfg-field', key },
     createElement('label', { className: 'imqb-cfg-label', htmlFor: `imqq-gi-${key}` }, label),
@@ -89,6 +89,7 @@ function GroupInterjectFields({ value, onChange }: {
       numberRow('maxPerHour', '每小时最多插话', 1, 30, 1, '次（滚动 60 分钟）'),
       numberRow('minRecentMessages', '群里在聊的门槛', 1, 20, 1, '回看窗口内至少这么多条群消息才算在聊'),
       numberRow('activeWindowSec', '回看窗口', 30, 1800, 30, '秒'),
+      numberRow('pityMessages', '保底条数', 0, 200, 1, '连续这么多条没接话就强制插一次，0 表示关闭'),
       createElement('div', { className: 'imqb-cfg-field', key: 'quietHours' },
         createElement('span', { className: 'imqb-cfg-label' }, '静默时段'),
         createElement('div', { className: 'imqb-cfg-head' },

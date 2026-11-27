@@ -108,7 +108,9 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `sessionIdleTimeout` | number | `1800000` | 会话闲置超时(ms)，默认 30 分钟；`<=0` 表示不回收 |
 | `processingTimeoutMs` | number | `1800000` | 处理超时(ms)，超时中断当前 LLM 调用 |
 | `maxQueue` | number | `20` | 并发队列最大长度 |
-| `historyLimit` | number | `10` | 群历史缓冲条数 |
+| `historyLimit` | number | `10` | 群历史最多带多少条进 prompt |
+| `historyMaxAgeSec` | number | `1800` | 群历史时间窗（秒），更早的消息不再带；最小 60 |
+| `historyMedia.enabled` | boolean | `true` | 给只进群历史的图片/表情也下载本地路径（群里每张图都会落盘，受 `media.maxMB` / `media.ttlHours` 约束） |
 | `askTimeoutMs` | number | `300000` | 待答问题超时(ms)，默认 5 分钟（ask_user_question） |
 | `showToolResults` | boolean | `false` | 是否展示工具调用成功结果（错误始终展示） |
 | `debug` | boolean | `false` | 调试模式 |
@@ -126,6 +128,7 @@ npx @deepseek-ai/dsh web --patch /path/to/dsh-qqbot/cordis.dev.yml
 | `groupInterject.quietHours` | number[] | `[1, 8]` | 静默时段 `[开始, 结束)` 本地小时；两数相等表示不静默 |
 | `groupInterject.minRecentMessages` | number | `3` | 回看窗口内至少多少条群消息才算「群里在聊」 |
 | `groupInterject.activeWindowSec` | number | `300` | 判断「在聊」的回看窗口（秒） |
+| `groupInterject.pityMessages` | number | `15` | 保底：连续多少条群消息没接话就强制插一次（0 = 关闭；仍受开关、静默时段、每小时上限约束） |
 
 **前提**：QQ 官方机器人默认只收到 @ 它的消息。要让机器人看见整段群聊，得在手机 QQ 里打开机器人 → 设置 → 消息范围 → **「获取群内全部消息」**；不开的话插件永远收不到非 @ 的消息，这个开关也就没意义。
 
